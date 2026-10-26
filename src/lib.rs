@@ -682,8 +682,7 @@ mod test {
         let mut buf = [0u8; 8];
         assert!(handle.copy_address(end - 8, &mut buf).is_ok());
         let err = handle.copy_address(end - 4, &mut buf).unwrap_err();
-        assert_eq!(err.raw_os_error(), Some(libc::EFAULT));
-        assert_ne!(err.kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
         unsafe { libc::munmap(mem, 2 * page) };
     }
 
@@ -716,7 +715,8 @@ mod test {
         let err = handle
             .copy_address(boundary - 4, &mut crossing)
             .unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(err.raw_os_error(), Some(libc::EFAULT));
+        assert_ne!(err.kind(), io::ErrorKind::UnexpectedEof);
 
         drop(handle);
         child_guard.child_mut().stdin.take();
