@@ -50,6 +50,16 @@ fn run_short_read_test() {
     }
 
     println!("{:x}", address as usize + page);
+    eprintln!(
+        "freebsd diagnostic: child_pid={} mapping={:#x}..{:#x} readable={:#x}..{:#x} protected={:#x}..{:#x}",
+        std::process::id(),
+        address as usize,
+        address as usize + length,
+        address as usize,
+        address as usize + page,
+        address as usize + page,
+        address as usize + length,
+    );
     io::stdout().flush().unwrap();
 
     let mut buf = vec![];

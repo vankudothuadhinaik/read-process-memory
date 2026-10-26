@@ -357,11 +357,28 @@ mod platform {
             piod_addr: buf.as_mut_ptr() as *mut c_void,
             piod_len: buf.len(),
         };
+        let initial_len = ptrace_io_desc.piod_len;
 
         let result = unsafe { ptrace(PT_IO, pid, &mut ptrace_io_desc as *mut _, 0) };
+        let ptrace_error = if result == -1 {
+            // Capture errno immediately after ptrace() before doing anything else.
+            Some(io::Error::last_os_error())
+        } else {
+            None
+        };
+        eprintln!(
+            "freebsd diagnostic: PT_IO pid={} addr={:#x} initial_len={} requested_len={} result={} actual_len={} error={:?}",
+            pid,
+            addr,
+            initial_len,
+            buf.len(),
+            result,
+            ptrace_io_desc.piod_len,
+            ptrace_error.as_ref().and_then(io::Error::raw_os_error),
+        );
 
         if result == -1 {
-            Err(io::Error::last_os_error())
+            Err(ptrace_error.unwrap())
         } else if ptrace_io_desc.piod_len != buf.len() {
             Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -379,9 +396,21 @@ mod platform {
     /// Detach from the process `pid`.
     fn ptrace_detach(pid: Pid) -> io::Result<()> {
         let detach_status = unsafe { ptrace(PT_DETACH, pid, ptr::null_mut(), 0) };
+        let detach_error = if detach_status == -1 {
+            // Capture errno immediately after ptrace() before doing anything else.
+            Some(io::Error::last_os_error())
+        } else {
+            None
+        };
+        eprintln!(
+            "freebsd diagnostic: PT_DETACH pid={} result={} error={:?}",
+            pid,
+            detach_status,
+            detach_error.as_ref().and_then(io::Error::raw_os_error),
+        );
 
         if detach_status == -1 {
-            Err(io::Error::last_os_error())
+            Err(detach_error.unwrap())
         } else {
             Ok(())
         }
@@ -389,13 +418,33 @@ mod platform {
 
     impl CopyAddress for ProcessHandle {
         fn copy_address(&self, addr: usize, buf: &mut [u8]) -> io::Result<()> {
+            eprintln!(
+                "freebsd diagnostic: copy_address pid={} addr={:#x} len={}",
+                self.0,
+                addr,
+                buf.len(),
+            );
             let should_detach = ptrace_attach(self.0)? == PtraceLockState::Release;
 
             let result = ptrace_io(self.0, addr, buf);
-            if should_detach {
-                ptrace_detach(self.0)?
-            }
-            result
+            let final_result = if should_detach {
+                match ptrace_detach(self.0) {
+                    Ok(()) => result,
+                    Err(error) => Err(error),
+                }
+            } else {
+                result
+            };
+            eprintln!(
+                "freebsd diagnostic: copy_address final pid={} result={:?}",
+                self.0,
+                final_result.as_ref().err().map(|error| (
+                    error.kind(),
+                    error.raw_os_error(),
+                    error.to_string(),
+                )),
+            );
+            final_result
         }
     }
 }
@@ -654,6 +703,15 @@ mod test {
         };
         let boundary = usize::from_str_radix(&line, 16).unwrap();
         let handle = ProcessHandle::try_from(&*child_guard.child_mut()).unwrap();
+        eprintln!(
+            "freebsd diagnostic: child_pid={} boundary={:#x} readable_range={:#x}..{:#x} crossing_range={:#x}..{:#x}",
+            child_guard.child_mut().id(),
+            boundary,
+            boundary - 8,
+            boundary,
+            boundary - 4,
+            boundary + 4,
+        );
 
         let mut readable = [0u8; 8];
         assert!(handle
