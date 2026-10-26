@@ -349,6 +349,27 @@ mod platform {
         }
     }
 
+    fn ptrace_io_result(
+        result: c_int,
+        requested_len: usize,
+        actual_len: usize,
+        ptrace_error: Option<io::Error>,
+    ) -> io::Result<()> {
+        if result == -1 {
+            Err(ptrace_error.expect("ptrace error must be captured on failure"))
+        } else if actual_len != requested_len {
+            Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!(
+                    "Mismatched read sizes for `PT_IO` (expected {}, got {})",
+                    requested_len, actual_len
+                ),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
     /// Read process `pid` memory at `addr` to `buf` via PT_IO ptrace call.
     fn ptrace_io(pid: Pid, addr: usize, buf: &mut [u8]) -> io::Result<()> {
         let mut ptrace_io_desc = PtraceIoDesc {
@@ -377,20 +398,7 @@ mod platform {
             ptrace_error.as_ref().and_then(io::Error::raw_os_error),
         );
 
-        if result == -1 {
-            Err(ptrace_error.unwrap())
-        } else if ptrace_io_desc.piod_len != buf.len() {
-            Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                format!(
-                    "Mismatched read sizes for `PT_IO` (expected {}, got {})",
-                    buf.len(),
-                    ptrace_io_desc.piod_len
-                ),
-            ))
-        } else {
-            Ok(())
-        }
+        ptrace_io_result(result, buf.len(), ptrace_io_desc.piod_len, ptrace_error)
     }
 
     /// Detach from the process `pid`.
@@ -445,6 +453,41 @@ mod platform {
                 )),
             );
             final_result
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn ptrace_io_failure_preserves_os_error() {
+            let error = io::Error::from_raw_os_error(libc::EFAULT);
+            let result = ptrace_io_result(-1, 8, 8, Some(error));
+
+            assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EFAULT));
+        }
+
+        #[test]
+        fn ptrace_io_full_transfer_succeeds() {
+            assert!(ptrace_io_result(0, 8, 8, None).is_ok());
+        }
+
+        #[test]
+        fn ptrace_io_short_transfer_returns_unexpected_eof() {
+            assert_eq!(
+                ptrace_io_result(0, 8, 4, None).unwrap_err().kind(),
+                io::ErrorKind::UnexpectedEof
+            );
+        }
+
+        #[test]
+        fn ptrace_io_failure_does_not_report_unexpected_eof() {
+            let error = io::Error::from_raw_os_error(libc::EFAULT);
+            let result = ptrace_io_result(-1, 8, 4, Some(error)).unwrap_err();
+
+            assert_eq!(result.raw_os_error(), Some(libc::EFAULT));
+            assert_ne!(result.kind(), io::ErrorKind::UnexpectedEof);
         }
     }
 }
@@ -723,7 +766,8 @@ mod test {
         let err = handle
             .copy_address(boundary - 4, &mut crossing)
             .unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(err.raw_os_error(), Some(libc::EFAULT));
+        assert_ne!(err.kind(), io::ErrorKind::UnexpectedEof);
 
         drop(handle);
         child_guard.child_mut().stdin.take();
