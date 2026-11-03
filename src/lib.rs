@@ -171,7 +171,7 @@ mod platform {
         ) -> kern_return_t;
     }
 
-    fn mach_error(operation: &str, code: kern_return_t) -> io::Error {
+    pub(super) fn mach_error(operation: &str, code: kern_return_t) -> io::Error {
         io::Error::new(
             io::ErrorKind::Other,
             format!("{} failed with Mach kern_return_t {}", operation, code),
@@ -502,7 +502,7 @@ mod platform {
         }
     }
 
-    fn validate_read_size(expected: usize, actual: usize) -> io::Result<()> {
+    pub(super) fn validate_read_size(expected: usize, actual: usize) -> io::Result<()> {
         if actual != expected {
             Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
