@@ -171,6 +171,13 @@ mod platform {
         ) -> kern_return_t;
     }
 
+    pub(super) fn mach_error(operation: &str, code: kern_return_t) -> io::Error {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("{} failed with Mach kern_return_t {}", operation, code),
+        )
+    }
+
     /// A small wrapper around `task_for_pid`, which takes a pid and returns the
     /// mach port representing its task.
     fn task_for_pid(pid: Pid) -> io::Result<mach_port_name_t> {
@@ -184,7 +191,7 @@ mod platform {
             let result =
                 mach2::traps::task_for_pid(mach2::traps::mach_task_self(), pid as c_int, &mut task);
             if result != KERN_SUCCESS {
-                return Err(io::Error::last_os_error());
+                return Err(mach_error("task_for_pid", result));
             }
         }
 
@@ -242,22 +249,36 @@ mod platform {
                 )
             };
 
+            if result != KERN_SUCCESS {
+                return Err(mach_error("vm_read_overwrite", result));
+            }
+
             if read_len != buf.len() as vm_size_t {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
                     format!(
-                        "Mismatched read sizes for `vm_read` (expected {}, got {})",
+                        "Mismatched read sizes for `vm_read_overwrite` (expected {}, got {})",
                         buf.len(),
                         read_len
                     ),
                 ));
             }
-
-            if result != KERN_SUCCESS {
-                return Err(io::Error::last_os_error());
-            }
             Ok(())
         }
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[cfg(test)]
+mod macos_error_tests {
+    use super::platform::mach_error;
+    use std::io::ErrorKind;
+
+    #[test]
+    fn mach_errors_preserve_the_kernel_return_code() {
+        let error = mach_error("task_for_pid", 5);
+        assert_eq!(error.kind(), ErrorKind::Other);
+        assert!(error.to_string().contains("kern_return_t 5"));
     }
 }
 
@@ -481,6 +502,20 @@ mod platform {
         }
     }
 
+    pub(super) fn validate_read_size(expected: usize, actual: usize) -> io::Result<()> {
+        if actual != expected {
+            Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!(
+                    "Mismatched read sizes for `ReadProcessMemory` (expected {}, got {})",
+                    expected, actual
+                ),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
     /// Use `ReadProcessMemory` to read memory from another process on Windows.
     impl CopyAddress for ProcessHandle {
         fn copy_address(&self, addr: usize, buf: &mut [u8]) -> io::Result<()> {
@@ -488,21 +523,35 @@ mod platform {
                 return Ok(());
             }
 
+            let mut bytes_read = 0usize;
             if unsafe {
                 ReadProcessMemory(
                     self.0 .0,
                     addr as *const c_void,
                     buf.as_mut_ptr().cast(),
                     mem::size_of_val(buf),
-                    ptr::null_mut(),
+                    &mut bytes_read,
                 )
             } == 0
             {
-                Err(io::Error::last_os_error())
-            } else {
-                Ok(())
+                return Err(io::Error::last_os_error());
             }
+            validate_read_size(buf.len(), bytes_read)
         }
+    }
+}
+
+#[cfg(windows)]
+#[cfg(test)]
+mod windows_read_tests {
+    use super::platform::validate_read_size;
+    use std::io::ErrorKind;
+
+    #[test]
+    fn windows_short_reads_return_unexpected_eof() {
+        let error = validate_read_size(8, 4).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::UnexpectedEof);
+        assert!(error.to_string().contains("expected 8, got 4"));
     }
 }
 
