@@ -268,6 +268,20 @@ mod platform {
     }
 }
 
+#[cfg(target_os = "macos")]
+#[cfg(test)]
+mod macos_error_tests {
+    use super::platform::mach_error;
+    use std::io::ErrorKind;
+
+    #[test]
+    fn mach_errors_preserve_the_kernel_return_code() {
+        let error = mach_error("task_for_pid", 5);
+        assert_eq!(error.kind(), ErrorKind::Other);
+        assert!(error.to_string().contains("kern_return_t 5"));
+    }
+}
+
 #[cfg(target_os = "freebsd")]
 mod platform {
     use libc::{c_int, c_void, pid_t};
@@ -488,6 +502,20 @@ mod platform {
         }
     }
 
+    fn validate_read_size(expected: usize, actual: usize) -> io::Result<()> {
+        if actual != expected {
+            Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!(
+                    "Mismatched read sizes for `ReadProcessMemory` (expected {}, got {})",
+                    expected, actual
+                ),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
     /// Use `ReadProcessMemory` to read memory from another process on Windows.
     impl CopyAddress for ProcessHandle {
         fn copy_address(&self, addr: usize, buf: &mut [u8]) -> io::Result<()> {
@@ -506,20 +534,24 @@ mod platform {
                 )
             } == 0
             {
-                Err(io::Error::last_os_error())
-            } else if bytes_read != buf.len() {
-                Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    format!(
-                        "Mismatched read sizes for `ReadProcessMemory` (expected {}, got {})",
-                        buf.len(),
-                        bytes_read
-                    ),
-                ))
-            } else {
-                Ok(())
+                return Err(io::Error::last_os_error());
             }
+            validate_read_size(buf.len(), bytes_read)
         }
+    }
+}
+
+#[cfg(windows)]
+#[cfg(test)]
+mod windows_read_tests {
+    use super::platform::validate_read_size;
+    use std::io::ErrorKind;
+
+    #[test]
+    fn windows_short_reads_return_unexpected_eof() {
+        let error = validate_read_size(8, 4).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::UnexpectedEof);
+        assert!(error.to_string().contains("expected 8, got 4"));
     }
 }
 
