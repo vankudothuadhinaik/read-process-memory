@@ -171,6 +171,13 @@ mod platform {
         ) -> kern_return_t;
     }
 
+    fn mach_error(operation: &str, code: kern_return_t) -> io::Error {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("{} failed with Mach kern_return_t {}", operation, code),
+        )
+    }
+
     /// A small wrapper around `task_for_pid`, which takes a pid and returns the
     /// mach port representing its task.
     fn task_for_pid(pid: Pid) -> io::Result<mach_port_name_t> {
@@ -184,7 +191,7 @@ mod platform {
             let result =
                 mach2::traps::task_for_pid(mach2::traps::mach_task_self(), pid as c_int, &mut task);
             if result != KERN_SUCCESS {
-                return Err(io::Error::last_os_error());
+                return Err(mach_error("task_for_pid", result));
             }
         }
 
@@ -242,19 +249,19 @@ mod platform {
                 )
             };
 
+            if result != KERN_SUCCESS {
+                return Err(mach_error("vm_read_overwrite", result));
+            }
+
             if read_len != buf.len() as vm_size_t {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
                     format!(
-                        "Mismatched read sizes for `vm_read` (expected {}, got {})",
+                        "Mismatched read sizes for `vm_read_overwrite` (expected {}, got {})",
                         buf.len(),
                         read_len
                     ),
                 ));
-            }
-
-            if result != KERN_SUCCESS {
-                return Err(io::Error::last_os_error());
             }
             Ok(())
         }
@@ -488,17 +495,27 @@ mod platform {
                 return Ok(());
             }
 
+            let mut bytes_read = 0usize;
             if unsafe {
                 ReadProcessMemory(
                     self.0 .0,
                     addr as *const c_void,
                     buf.as_mut_ptr().cast(),
                     mem::size_of_val(buf),
-                    ptr::null_mut(),
+                    &mut bytes_read,
                 )
             } == 0
             {
                 Err(io::Error::last_os_error())
+            } else if bytes_read != buf.len() {
+                Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    format!(
+                        "Mismatched read sizes for `ReadProcessMemory` (expected {}, got {})",
+                        buf.len(),
+                        bytes_read
+                    ),
+                ))
             } else {
                 Ok(())
             }
